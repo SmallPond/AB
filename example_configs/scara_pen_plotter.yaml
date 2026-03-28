@@ -1,0 +1,250 @@
+# FluidNC SCARA 写字机配置
+# 
+# 硬件配置：
+# - 两个步进电机（X/Y轴控制SCARA臂）
+# - 一个舵机控制抬笔/落笔
+# - SCARA 绝对角度模式
+# - 大臂长度：200mm
+# - 小臂长度：200mm
+#
+# 工作空间：
+# - 最大半径：400mm（两臂伸直）
+# - 最小半径：0mm（两臂重叠）
+# - 工作面积：约 502,654 mm² (π*r²)
+
+name: SCARA Writing Machine
+board: WBOT
+meta: 2026-03-28 SCARA Pen Plotter - 200mm arms
+
+# ========================
+# 步进电机驱动配置
+# ========================
+stepping:
+  engine: I2S_STREAM      # 或 RMT, 根据你的板子选择
+  idle_ms: 255            # 保持电机锁定（防止写字时位置偏移）
+  dir_delay_us: 1
+  pulse_us: 4
+  disable_delay_us: 0
+
+# ========================
+# UART配置（用于TMC2209驱动，如果使用）
+# ========================
+# uart1:
+#   txd_pin: gpio.16
+#   rxd_pin: gpio.4
+#   baud: 115200
+#   mode: 8N1
+
+# ========================
+# SCARA 运动学配置
+# ========================
+kinematics:
+  Scara:
+    # 臂长配置（单位：mm）
+    linkage1_mm: 200.0        # 大臂长度
+    linkage2_mm: 200.0        # 小臂长度
+    
+    # 用户坐标系偏移（根据你的写字区域调整）
+    # 如果想让机械臂中心对应纸张中心，可以设置偏移
+    scara_offset_x: 0.0       # X方向偏移
+    scara_offset_y: 0.0       # Y方向偏移
+    
+    # 运动分段长度（越小越平滑，但计算量越大）
+    # 写字机建议：0.5-1.0mm
+    kinematic_segment_len_mm: 0.5
+
+# ========================
+# 轴配置
+# ========================
+axes:
+  shared_stepper_disable_pin: NO_PIN
+  homing_runs: 1
+  
+  # ========================
+  # X轴 - 大臂（theta角度）
+  # ========================
+  # 注意：SCARA的X轴单位是"度"，不是毫米
+  # 步进电机每圈步数计算：
+  #   标准步进电机：200步/圈 × 16细分 = 3200步/圈
+  #   步/度 = 3200 / 360 = 8.89
+  x:
+    steps_per_mm: 8.89              # 步/度
+    max_rate_mm_per_min: 5400       # 度/分钟 (约15度/秒)
+    acceleration_mm_per_sec2: 300   # 度/秒²
+    max_travel_mm: 360              # 行程范围（度）
+    soft_limits: false              # 通过kinematics自动限制
+    
+    homing:
+      cycle: 1
+      mpos_mm: 0                    # 归位角度（0度）
+      positive_direction: true
+      seek_mm_per_min: 2700         # 快速归位速度
+      feed_mm_per_min: 540          # 慢速归位速度
+    
+    motor0:
+      limit_neg_pin: NO_PIN
+      limit_pos_pin: NO_PIN
+      limit_all_pin: NO_PIN
+      hard_limits: false
+      pulloff_mm: 2.0               # 归位后回退角度
+      
+      # 选择你的驱动类型（以下为示例，根据实际硬件修改）
+      # TMC2209配置示例：
+      # tmc_2209:
+      #   uart_num: 1
+      #   addr: 0
+      #   r_sense_ohms: 0.11
+      #   run_amps: 1.2              # 写字机可以用较低电流
+      #   hold_amps: 0.6
+      #   microsteps: 16
+      #   stallguard: 0
+      #   toff_stealthchop: 5
+      #   run_mode: StealthChop      # 静音模式
+      #   direction_pin: i2so.1:low
+      #   step_pin: i2so.2
+      #   disable_pin: i2so.0
+      
+      # 简单步进驱动示例：
+      # stepstick:
+      #   direction_pin: gpio.26:low
+      #   step_pin: gpio.27
+      #   disable_pin: gpio.25
+
+  # ========================
+  # Y轴 - 小臂（psi角度）
+  # ========================
+  y:
+    steps_per_mm: 8.89              # 步/度
+    max_rate_mm_per_min: 5400       # 度/分钟
+    acceleration_mm_per_sec2: 300   # 度/秒²
+    max_travel_mm: 360              # 行程范围（度）
+    soft_limits: false
+    
+    homing:
+      cycle: 1
+      mpos_mm: 0
+      positive_direction: true
+      seek_mm_per_min: 2700
+      feed_mm_per_min: 540
+    
+    motor0:
+      limit_neg_pin: NO_PIN
+      limit_pos_pin: NO_PIN
+      limit_all_pin: NO_PIN
+      hard_limits: false
+      pulloff_mm: 2.0
+      
+      # 根据你的硬件配置驱动
+      # tmc_2209:
+      #   uart_num: 1
+      #   addr: 1
+      #   r_sense_ohms: 0.11
+      #   run_amps: 1.2
+      #   hold_amps: 0.6
+      #   microsteps: 16
+      #   toff_stealthchop: 5
+      #   run_mode: StealthChop
+      #   direction_pin: i2so.4:low
+      #   step_pin: i2so.5
+      #   disable_pin: i2so.7
+
+  # ========================
+  # Z轴 - 抬笔舵机
+  # ========================
+  # 方式1：使用舵机作为Z轴（推荐用于写字机）
+  z:
+    steps_per_mm: 1.0               # 舵机单位为度
+    max_rate_mm_per_min: 3600       # 度/分钟
+    acceleration_mm_per_sec2: 1000
+    max_travel_mm: 90               # 舵机行程：90度
+    soft_limits: false
+    
+    homing:
+      cycle: 2
+      mpos_mm: 45                   # 归位到中间位置
+      positive_direction: true
+    
+    motor0:
+      # 舵机配置
+      servo:
+        pwm_hz: 50                  # 舵机PWM频率：50Hz
+        output_pin: gpio.18         # 修改为你的舵机信号引脚
+        disable_pin: NO_PIN
+        min_pulse_us: 500           # 舵机最小脉宽（调整以匹配你的舵机）
+        max_pulse_us: 2500          # 舵机最大脉宽（调整以匹配你的舵机）
+
+# ========================
+# 控制引脚（根据需要启用）
+# ========================
+control:
+  safety_door_pin: NO_PIN
+  cycle_start_pin: NO_PIN
+  reset_pin: NO_PIN
+  feed_hold_pin: NO_PIN
+
+# ========================
+# 探针配置（可选，用于纸张检测）
+# ========================
+# probe:
+#   pin: gpio.36:low
+
+# ========================
+# 用户输出（可选，用于LED指示等）
+# ========================
+# user_outputs:
+#   digital0_pin: gpio.2     # 状态LED
+
+# ========================
+# SPI配置（用于SD卡）
+# ========================
+# spi:
+#   miso_pin: gpio.19
+#   mosi_pin: gpio.23
+#   sck_pin: gpio.18
+
+# ========================
+# SD卡配置（用于存储G代码文件）
+# ========================
+# sdcard:
+#   cs_pin: gpio.5
+#   card_detect_pin: NO_PIN
+
+# ========================
+# 启动配置
+# ========================
+start:
+  must_home: true                  # 启动前必须归位
+  deactivate_parking: false
+  check_limits: true
+
+# ========================
+# 停靠配置（写字机通常不需要）
+# ========================
+parking:
+  enable: false
+
+# ========================
+# 宏定义（写字常用命令）
+# ========================
+macros:
+  # 启动时执行
+  startup_line0: G21               # 设置毫米单位
+  startup_line1: G90               # 绝对定位模式
+  
+  # 自定义宏
+  Macro0: G0 Z0                    # M401: 抬笔（Z轴到0度）
+  Macro1: G0 Z45                   # M402: 落笔（Z轴到45度）
+  Macro2: G0 Z90                   # M403: 抬笔到最高
+  Macro3: G28                      # M404: 归位所有轴
+  
+  # 归位后执行
+  after_homing: G0 Z0              # 归位后自动抬笔
+
+# ========================
+# 打印机设置
+# ========================
+arc_tolerance_mm: 0.002
+junction_deviation_mm: 0.01        # 影响拐角速度，越小越平滑
+verbose_errors: true
+report_inches: false
+planner_blocks: 16
