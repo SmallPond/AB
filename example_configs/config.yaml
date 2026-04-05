@@ -1,0 +1,74 @@
+# Minimal SCARA configuration - X axis only
+# ESP32-S3 with stepstick driver
+
+name: SCARA Minimal
+board: ESP32-S3-DevKitC-1
+meta: 2026-03-31 Minimal Test
+
+stepping:
+  engine: RMT
+  idle_ms: 255
+  pulse_us: 4
+  dir_delay_us: 1
+  disable_delay_us: 0
+
+kinematics:
+  Scara:
+    linkage1_mm: 200.0
+    linkage2_mm: 200.0
+    scara_offset_x: 0.0
+    scara_offset_y: 0.0
+    kinematic_segment_len_mm: 0.5
+
+axes:
+  shared_stepper_disable_pin: NO_PIN
+  homing_runs: 1
+  
+  x:
+    # Steps per degree calculation:
+    # 200 steps/rev * 16 microsteps = 3200 steps/rev
+    # 3200 / 360 degrees = 8.89 steps/degree
+    steps_per_mm: 8.89
+    max_rate_mm_per_min: 5400
+    acceleration_mm_per_sec2: 300
+    max_travel_mm: 360
+    soft_limits: false
+    
+    homing:
+      cycle: 1
+      mpos_mm: 0
+      positive_direction: true
+      seek_mm_per_min: 2700
+      feed_mm_per_min: 540
+    
+    motor0:
+      limit_neg_pin: NO_PIN
+      limit_pos_pin: NO_PIN
+      limit_all_pin: NO_PIN
+      hard_limits: false
+      pulloff_mm: 2.0
+      
+      stepstick:
+        direction_pin: gpio.42:low
+        step_pin: gpio.41
+        disable_pin: gpio.40
+
+control:
+  safety_door_pin: NO_PIN
+  cycle_start_pin: NO_PIN
+  reset_pin: NO_PIN
+  feed_hold_pin: NO_PIN
+
+start:
+  must_home: false
+  deactivate_parking: false
+  check_limits: true
+
+parking:
+  enable: false
+
+arc_tolerance_mm: 0.002
+junction_deviation_mm: 0.01
+verbose_errors: true
+report_inches: false
+planner_blocks: 16
