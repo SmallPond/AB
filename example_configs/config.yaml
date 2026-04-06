@@ -1,7 +1,9 @@
-# Minimal SCARA configuration - X axis only
-# ESP32-S3 with stepstick driver
+# SCARA Pen Plotter Configuration
+# ESP32-S3 with stepstick drivers and servo
+# X/Y: SCARA arms (16 microsteps)
+# Z: Servo for pen lift/lower
 
-name: SCARA Minimal
+name: SCARA Pen Plotter
 board: ESP32-S3-DevKitC-1
 meta: 2026-03-31 Minimal Test
 
@@ -16,8 +18,8 @@ kinematics:
   Scara:
     linkage1_mm: 200.0
     linkage2_mm: 200.0
-    scara_offset_x: 0.0
-    scara_offset_y: 0.0
+    scara_offset_x: 129.0
+    scara_offset_y: 128.0
     kinematic_segment_len_mm: 0.5
 
 axes:
@@ -33,31 +35,83 @@ axes:
     acceleration_mm_per_sec2: 300
     max_travel_mm: 360
     soft_limits: false
-    
+
     homing:
       cycle: 1
       mpos_mm: 0
       positive_direction: true
       seek_mm_per_min: 2700
       feed_mm_per_min: 540
-    
+
     motor0:
-      limit_neg_pin: NO_PIN
-      limit_pos_pin: NO_PIN
-      limit_all_pin: NO_PIN
-      hard_limits: false
-      pulloff_mm: 2.0
-      
+      limit_all_pin: gpio.18:high:pu
+      hard_limits: true
+      pulloff_mm: 5.0
+
       stepstick:
         direction_pin: gpio.42:low
         step_pin: gpio.41
         disable_pin: gpio.40
+
+  y:
+    # Steps per degree calculation (same as X axis):
+    # 200 steps/rev * 16 microsteps = 3200 steps/rev
+    # 3200 / 360 degrees = 8.89 steps/degree
+    steps_per_mm: 8.89
+    max_rate_mm_per_min: 5400
+    acceleration_mm_per_sec2: 300
+    max_travel_mm: 360
+    soft_limits: false
+
+    homing:
+      cycle: 1
+      mpos_mm: 0
+      positive_direction: true
+      seek_mm_per_min: 2700
+      feed_mm_per_min: 540
+
+    motor0:
+      limit_all_pin: gpio.2:high:pu
+      hard_limits: true
+      pulloff_mm: 5.0
+      
+      stepstick:
+        direction_pin: gpio.16:low
+        step_pin: gpio.15
+        disable_pin: gpio.7
+
+  z:
+    # Servo for pen lift/lower
+    # M4 L10.00 T90.00: L=pen down(10°), T=pen up(90°)
+    steps_per_mm: 1.0
+    max_rate_mm_per_min: 3600
+    acceleration_mm_per_sec2: 1000
+    max_travel_mm: 90
+    soft_limits: false
+
+    homing:
+      cycle: 2
+      mpos_mm: 90
+      positive_direction: true
+
+    motor0:
+      rc_servo:
+        output_pin: gpio.38
+        pwm_hz: 50
+        min_pulse_us: 500
+        max_pulse_us: 2500
 
 control:
   safety_door_pin: NO_PIN
   cycle_start_pin: NO_PIN
   reset_pin: NO_PIN
   feed_hold_pin: NO_PIN
+
+user_outputs:
+  digital0_pin: gpio.8
+  digital1_pin: NO_PIN
+  digital2_pin: NO_PIN
+  digital3_pin: NO_PIN
 
 start:
   must_home: false
@@ -66,6 +120,14 @@ start:
 
 parking:
   enable: false
+
+macros:
+  startup_line0: G21
+  startup_line1: G90
+  Macro0: G0 Z10   # Pen down (M4 L10.00)
+  Macro1: G0 Z90   # Pen up (M4 T90.00)
+  Macro2: G28
+  after_homing: G0 Z90  # Pen up after homing
 
 arc_tolerance_mm: 0.002
 junction_deviation_mm: 0.01
