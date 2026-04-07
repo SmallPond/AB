@@ -54,6 +54,10 @@ namespace Kinematics {
         virtual void constrain_jog(float* cartesian, plan_line_data_t* pl_data, float* position) override;
         
         bool canHome(AxisMask axisMask) override;
+        void releaseMotors(AxisMask axisMask, MotorMask motors) override;
+        bool limitReached(AxisMask& axisMask, MotorMask& motors, MotorMask limited) override;
+        void homing_move(AxisMask axes, MotorMask motors, Machine::Homing::Phase phase, uint32_t settling_ms) override;
+        void set_homed_mpos(float* mpos) override;
 
         // Configuration handlers
         void validate() override {}
@@ -70,6 +74,10 @@ namespace Kinematics {
         // Inverse kinematics: Convert cartesian coordinates to motor angles
         // Returns true if the position is reachable, false otherwise
         bool inverse_kinematics(float cartesian_x, float cartesian_y, float& theta_deg, float& psi_deg);
+
+        // Homing helper: compute motor-space target and feedrate for a given homing phase
+        void motorVector(AxisMask axisMask, MotorMask motors, Machine::Homing::Phase phase,
+                         float* target, float& rate, uint32_t& settle_ms);
 
         // Helper functions for angle conversions
         inline float degrees_to_radians(float degrees) { return degrees * (M_PI / 180.0f); }

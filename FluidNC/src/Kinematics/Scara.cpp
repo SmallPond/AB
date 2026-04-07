@@ -338,9 +338,223 @@ namespace Kinematics {
       Check if homing is possible
     */
     bool Scara::canHome(AxisMask axisMask) {
-        // SCARA can home using standard cartesian-style homing
-        // The motors are directly controlled for homing
-        return Cartesian::canHome(axisMask);
+        if (ambiguousLimit()) {
+            log_error("Ambiguous limit switch touching. Manually clear all switches");
+            return false;
+        }
+        return true;
+    }
+
+    /*
+      Release motors that are still needed for homing.
+      For SCARA, each axis/motor is independent in homing (joint space),
+      so we just unlimit each motor individually.
+    */
+    void Scara::releaseMotors(AxisMask axisMask, MotorMask motors) {
+        auto n_axis = Axes::_numberAxis;
+        for (axis_t axis = X_AXIS; axis < n_axis; axis++) {
+            if (bitnum_is_true(axisMask, axis)) {
+                Stepping::unlimit(axis, MOTOR0);
+            }
+        }
+    }
+
+    /*
+      Handle limit switch events during homing.
+      Each SCARA joint homes independently, so when a limit is hit
+      we simply clear that motor from the mask.
+    */
+    bool Scara::limitReached(AxisMask& axisMask, MotorMask& motors, MotorMask limited) {
+        // Clear the motors whose limits have been reached
+        clear_bits(motors, limited);
+
+        auto oldAxisMask = axisMask;
+
+        // Set axisMask according to the motors that are still running
+        axisMask = Machine::Axes::motors_to_axes(motors);
+
+        // Return true when an axis drops out of the mask, causing replan
+        return axisMask != oldAxisMask;
+    }
+
+    /*
+      Compute motor-space target and feedrate for a given homing phase.
+      
+      SCARA homing operates directly in joint/motor space (degrees),
+      NOT in cartesian space. Each joint homes independently to its
+      limit switch.
+    */
+    void Scara::motorVector(AxisMask axisMask, MotorMask motorMask, Machine::Homing::Phase phase,
+                            float* target, float& rate, uint32_t& settle_ms) {
+        auto axes   = config->_axes;
+        auto n_axis = axes->_numberAxis;
+
+        settle_ms = 0;
+        float ratesq      = 0.0f;
+        float maxSeekTime  = 0.0f;
+
+        float rates[MAX_N_AXIS]    = { 0 };
+        float distance[MAX_N_AXIS] = { 0 };
+
+        bool seeking  = phase == Machine::Homing::Phase::FastApproach;
+        bool approach = seeking || phase == Machine::Homing::Phase::SlowApproach;
+
+        for (axis_t axis = X_AXIS; axis < n_axis; axis++) {
+            if (bitnum_is_false(axisMask, axis)) {
+                continue;
+            }
+
+            auto axisConfig = axes->_axis[axis];
+            auto homing     = axisConfig->_homing;
+            if (!homing) {
+                continue;
+            }
+
+            settle_ms = std::max(settle_ms, homing->_settle_ms);
+
+            float axis_rate = 1;
+            float travel    = 0;
+
+            switch (phase) {
+                case Machine::Homing::Phase::FastApproach:
+                    axis_rate = homing->_seekRate;
+                    travel    = axisConfig->_maxTravel;
+                    break;
+                case Machine::Homing::Phase::PrePulloff:
+                case Machine::Homing::Phase::SlowApproach:
+                case Machine::Homing::Phase::Pulloff0:
+                case Machine::Homing::Phase::Pulloff1:
+                    axis_rate = homing->_feedRate;
+                    travel    = axisConfig->commonPulloff();
+                    break;
+                case Machine::Homing::Phase::Pulloff2:
+                    axis_rate = homing->_feedRate;
+                    travel    = axisConfig->extraPulloff();
+                    break;
+                default:
+                    break;
+            }
+
+            // Set target direction
+            switch (phase) {
+                case Machine::Homing::Phase::PrePulloff: {
+                    MotorMask axisMotors = Machine::Axes::axes_to_motors(1 << axis);
+                    bool      posLimited = bits_are_true(Machine::Axes::posLimitMask, axisMotors);
+                    bool      negLimited = bits_are_true(Machine::Axes::negLimitMask, axisMotors);
+                    if (posLimited) {
+                        distance[axis] = -travel;
+                    } else if (negLimited) {
+                        distance[axis] = travel;
+                    } else {
+                        distance[axis] = 0;
+                    }
+                } break;
+
+                case Machine::Homing::Phase::FastApproach:
+                case Machine::Homing::Phase::SlowApproach:
+                    distance[axis] = homing->_positiveDirection ? travel : -travel;
+                    break;
+
+                case Machine::Homing::Phase::Pulloff0:
+                case Machine::Homing::Phase::Pulloff1:
+                case Machine::Homing::Phase::Pulloff2:
+                    distance[axis] = homing->_positiveDirection ? -travel : travel;
+                    break;
+
+                default:
+                    break;
+            }
+
+            ratesq += (axis_rate * axis_rate);
+            rates[axis] = axis_rate;
+
+            auto seekTime = travel / axis_rate;
+            if (seekTime > maxSeekTime) {
+                maxSeekTime = seekTime;
+            }
+        }
+
+        // Scale distances and apply scalers
+        for (axis_t axis = X_AXIS; axis < n_axis; axis++) {
+            if (bitnum_is_true(axisMask, axis)) {
+                if (phase == Machine::Homing::Phase::FastApproach) {
+                    float absDistance = maxSeekTime * rates[axis];
+                    distance[axis]   = distance[axis] >= 0 ? absDistance : -absDistance;
+                }
+
+                auto paxis  = axes->_axis[axis];
+                auto homing = paxis->_homing;
+                if (homing) {
+                    auto scaler = approach ? (seeking ? homing->_seek_scaler : homing->_feed_scaler) : 1.0;
+                    distance[axis] *= scaler;
+                    target[axis] += distance[axis];
+                }
+            }
+        }
+
+        rate = sqrtf(ratesq);
+    }
+
+    /*
+      SCARA homing move - operates directly in motor/joint space.
+      
+      Unlike normal cartesian_to_motors() which does inverse kinematics,
+      homing sends motor positions (angles in degrees) directly via
+      mc_move_motors(), bypassing the kinematic transform.
+      
+      This ensures that $HX only moves the theta motor and
+      $HY only moves the psi motor.
+    */
+    void Scara::homing_move(AxisMask axisMask, MotorMask motors, Machine::Homing::Phase phase, uint32_t settling_ms) {
+        releaseMotors(axisMask, motors);
+
+        float rate;
+        float target[MAX_N_AXIS];
+
+        // Start from current motor positions (angles in degrees)
+        copyAxes(target, get_motor_pos());
+
+        motorVector(axisMask, motors, phase, target, rate, settling_ms);
+
+        if (rate == 0) {
+            return;
+        }
+
+        plan_line_data_t plan_data      = {};
+        plan_data.spindle_speed         = 0;
+        plan_data.motion                = {};
+        plan_data.motion.systemMotion   = 1;
+        plan_data.motion.noFeedOverride = 1;
+        plan_data.spindle               = SpindleState::Disable;
+        plan_data.coolant               = {};
+        plan_data.line_number           = 0;
+        plan_data.is_jog                = false;
+        plan_data.feed_rate             = rate;
+
+        // Send motor positions directly, bypassing inverse kinematics
+        mc_move_motors(target, &plan_data);
+
+        protocol_send_event(&cycleStartEvent);
+    }
+
+    /*
+      Set the machine position after homing.
+      
+      For SCARA, the homed motor positions are angles (degrees).
+      We set the motor steps directly from these angle values.
+    */
+    void Scara::set_homed_mpos(float* mpos) {
+        auto  n_axis = Axes::_numberAxis;
+
+        // For SCARA, mpos is in cartesian coordinates (mm).
+        // We need to convert to motor angles for X and Y,
+        // while Z and other axes pass through directly.
+        float motor_pos[MAX_N_AXIS];
+        transform_cartesian_to_motors(motor_pos, mpos);
+
+        for (axis_t axis = X_AXIS; axis < n_axis; axis++) {
+            set_steps(axis, motor_pos_to_steps(motor_pos[axis], axis));
+        }
     }
 
     // Configuration registration
