@@ -87,6 +87,11 @@ namespace Kinematics {
         return _system->set_homed_mpos(mpos);
     }
 
+    Error Kinematics::auto_calibrate(Channel& out) {
+        Assert(_system != nullptr, no_system);
+        return _system->auto_calibrate(out);
+    }
+
     void Kinematics::group(Configuration::HandlerBase& handler) {
         ::Kinematics::KinematicsFactory::factory(handler, _system);
     }

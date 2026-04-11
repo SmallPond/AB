@@ -18,6 +18,9 @@
 #include "Limit.h"
 #include "Machine/Homing.h"
 #include "Protocol.h"
+#include "GCode.h"    // gc_sync_position
+#include "Settings.h" // coords, CoordIndex for G28 position
+#include "Channel.h"  // Channel for log_msg_to
 
 #include <cmath>
 
@@ -33,6 +36,8 @@ namespace Kinematics {
         handler.item("scara_offset_x", _scara_offset_x, -500.0f, 500.0f);
         handler.item("scara_offset_y", _scara_offset_y, -500.0f, 500.0f);
         handler.item("kinematic_segment_len_mm", _kinematic_segment_len_mm, 0.1f, 20.0f);
+        handler.item("cal_init_theta", _cal_init_theta, -180.0f, 180.0f);
+        handler.item("cal_init_psi", _cal_init_psi, -180.0f, 360.0f);
     }
 
     /*
@@ -378,20 +383,44 @@ namespace Kinematics {
     }
 
     /*
-      Compute motor-space target and feedrate for a given homing phase.
+      SCARA homing move - operates directly in motor/joint space.
       
-      SCARA homing operates directly in joint/motor space (degrees),
-      NOT in cartesian space. Each joint homes independently to its
-      limit switch.
+      Unlike normal cartesian_to_motors() which does inverse kinematics,
+      homing sends motor positions (angles in degrees) directly via
+      mc_move_motors(), bypassing the kinematic transform.
+      
+      This ensures that $HX only moves the theta motor and
+      $HY only moves the psi motor.
+      
+      The implementation reuses axesVector() from Cartesian to compute
+      distance and speed, but uses get_motor_pos() as the starting point
+      (motor angles in degrees) instead of get_mpos() (cartesian coords).
+      The resulting target is sent directly to mc_move_motors() without
+      going through inverse kinematics.
     */
-    void Scara::motorVector(AxisMask axisMask, MotorMask motorMask, Machine::Homing::Phase phase,
-                            float* target, float& rate, uint32_t& settle_ms) {
+    void Scara::homing_move(AxisMask axisMask, MotorMask motors, Machine::Homing::Phase phase, uint32_t settling_ms) {
+        releaseMotors(axisMask, motors);
+
         auto axes   = config->_axes;
         auto n_axis = axes->_numberAxis;
 
-        settle_ms = 0;
+        // Use axesVector logic but in motor (angle) space instead of cartesian space.
+        // axesVector computes: target = startPos + distance, rate.
+        // We compute the same thing but with motor positions as the starting point.
+        
+        float rate;
+        float target[MAX_N_AXIS];
+        
+        // Cartesian::axesVector uses get_mpos() internally as start position.
+        // We need motor positions instead, so we call axesVector and then
+        // replace the result with motor-space calculations.
+        
+        // Start from current motor positions (angles in degrees)
+        copyAxes(target, get_motor_pos());
+        
+        float maxSeekTime = 0.0f;
         float ratesq      = 0.0f;
-        float maxSeekTime  = 0.0f;
+        settling_ms       = 0;
 
         float rates[MAX_N_AXIS]    = { 0 };
         float distance[MAX_N_AXIS] = { 0 };
@@ -410,11 +439,10 @@ namespace Kinematics {
                 continue;
             }
 
-            settle_ms = std::max(settle_ms, homing->_settle_ms);
+            settling_ms = std::max(settling_ms, homing->_settle_ms);
 
             float axis_rate = 1;
             float travel    = 0;
-
             switch (phase) {
                 case Machine::Homing::Phase::FastApproach:
                     axis_rate = homing->_seekRate;
@@ -435,7 +463,6 @@ namespace Kinematics {
                     break;
             }
 
-            // Set target direction
             switch (phase) {
                 case Machine::Homing::Phase::PrePulloff: {
                     MotorMask axisMotors = Machine::Axes::axes_to_motors(1 << axis);
@@ -474,51 +501,31 @@ namespace Kinematics {
             }
         }
 
-        // Scale distances and apply scalers
+        // Scale distances and apply to target
         for (axis_t axis = X_AXIS; axis < n_axis; axis++) {
-            if (bitnum_is_true(axisMask, axis)) {
-                if (phase == Machine::Homing::Phase::FastApproach) {
-                    float absDistance = maxSeekTime * rates[axis];
-                    distance[axis]   = distance[axis] >= 0 ? absDistance : -absDistance;
-                }
+            if (bitnum_is_false(axisMask, axis)) {
+                continue;
+            }
+            if (phase == Machine::Homing::Phase::FastApproach) {
+                float absDistance = maxSeekTime * rates[axis];
+                distance[axis]   = distance[axis] >= 0 ? absDistance : -absDistance;
+            }
 
-                auto paxis  = axes->_axis[axis];
-                auto homing = paxis->_homing;
-                if (homing) {
-                    auto scaler = approach ? (seeking ? homing->_seek_scaler : homing->_feed_scaler) : 1.0;
-                    distance[axis] *= scaler;
-                    target[axis] += distance[axis];
-                }
+            auto axisConfig = axes->_axis[axis];
+            auto homing     = axisConfig->_homing;
+            if (homing) {
+                auto scaler = approach ? (seeking ? homing->_seek_scaler : homing->_feed_scaler) : 1.0;
+                distance[axis] *= scaler;
+                target[axis] += distance[axis];
             }
         }
 
         rate = sqrtf(ratesq);
-    }
-
-    /*
-      SCARA homing move - operates directly in motor/joint space.
-      
-      Unlike normal cartesian_to_motors() which does inverse kinematics,
-      homing sends motor positions (angles in degrees) directly via
-      mc_move_motors(), bypassing the kinematic transform.
-      
-      This ensures that $HX only moves the theta motor and
-      $HY only moves the psi motor.
-    */
-    void Scara::homing_move(AxisMask axisMask, MotorMask motors, Machine::Homing::Phase phase, uint32_t settling_ms) {
-        releaseMotors(axisMask, motors);
-
-        float rate;
-        float target[MAX_N_AXIS];
-
-        // Start from current motor positions (angles in degrees)
-        copyAxes(target, get_motor_pos());
-
-        motorVector(axisMask, motors, phase, target, rate, settling_ms);
-
         if (rate == 0) {
             return;
         }
+
+        log_debug("SCARA homing motor target " << target[0] << "," << target[1] << "," << target[2] << " @ " << rate);
 
         plan_line_data_t plan_data      = {};
         plan_data.spindle_speed         = 0;
@@ -531,30 +538,219 @@ namespace Kinematics {
         plan_data.is_jog                = false;
         plan_data.feed_rate             = rate;
 
-        // Send motor positions directly, bypassing inverse kinematics
         mc_move_motors(target, &plan_data);
-
         protocol_send_event(&cycleStartEvent);
     }
 
     /*
       Set the machine position after homing.
       
-      For SCARA, the homed motor positions are angles (degrees).
-      We set the motor steps directly from these angle values.
+      Called by Homing::set_mpos() after limit switches are triggered.
+      Homing::set_mpos() sets mpos[axis] = homing->_mpos for each homed axis.
+      
+      For SCARA X/Y axes, homing operates in joint/motor space (degrees).
+      The homing->_mpos value is the motor angle (degrees) at the limit switch.
+      We set the motor steps directly from these angle values WITHOUT
+      doing inverse kinematics - because homing already knows the motor
+      angles, not cartesian positions.
+      
+      For other axes (Z servo etc.), the values pass through unchanged.
+      
+      After setting motor steps, we update mpos[] to the corresponding
+      cartesian coordinates via forward kinematics, so the rest of the
+      system (GCode parser, planner) sees correct cartesian positions.
     */
     void Scara::set_homed_mpos(float* mpos) {
         auto  n_axis = Axes::_numberAxis;
 
-        // For SCARA, mpos is in cartesian coordinates (mm).
-        // We need to convert to motor angles for X and Y,
-        // while Z and other axes pass through directly.
+        if (_calibrating) {
+            // CALIBRATION MODE:
+            // At this point, the motor has physically moved from the calibration
+            // pose to (limit switch - pulloff). The step counters reflect the
+            // actual position because we set them to the init angles before homing.
+            //
+            // Read the current steps and convert to angles - this gives us
+            // the actual physical angle after homing (at the pulloff position).
+            //
+            // However, mpos_mm in the homing config represents the position
+            // that the system assigns after homing completes (after pulloff).
+            // So we save the current angle as the mpos_mm value.
+            
+            float* current_motor_pos = get_motor_pos();
+            _cal_result_theta = current_motor_pos[X_AXIS];
+            _cal_result_psi   = current_motor_pos[Y_AXIS];
+
+            log_debug("Calibration captured angles: theta=" << _cal_result_theta 
+                      << " psi=" << _cal_result_psi);
+
+            // Still set the steps correctly for the current position
+            // (using the angles we just read, which are already in the step counter)
+            // and update cartesian position via forward kinematics
+            float motor_pos[MAX_N_AXIS];
+            for (axis_t axis = X_AXIS; axis < n_axis; axis++) {
+                motor_pos[axis] = current_motor_pos[axis];
+            }
+            motors_to_cartesian(mpos, motor_pos, n_axis);
+            return;
+        }
+
+        // NORMAL HOMING MODE:
+        // For SCARA, mpos[X] and mpos[Y] from Homing::set_mpos() are
+        // motor angles (degrees) at the limit switch position.
+        // Set motor steps directly from these angle values.
         float motor_pos[MAX_N_AXIS];
-        transform_cartesian_to_motors(motor_pos, mpos);
+        for (axis_t axis = X_AXIS; axis < n_axis; axis++) {
+            motor_pos[axis] = mpos[axis];
+        }
 
         for (axis_t axis = X_AXIS; axis < n_axis; axis++) {
             set_steps(axis, motor_pos_to_steps(motor_pos[axis], axis));
         }
+
+        // Now update mpos[] to cartesian coordinates via forward kinematics
+        // so that the GCode parser and planner see correct positions.
+        // motors_to_cartesian converts motor angles → cartesian for X/Y
+        // and passes through Z and other axes unchanged.
+        motors_to_cartesian(mpos, motor_pos, n_axis);
+    }
+
+    /*
+      Auto-calibration procedure ($M700)
+      
+      Prerequisites:
+        User must manually position the arm at the calibration pose:
+        - theta (upper arm) = _cal_init_theta (default 0°, along -X axis)
+        - psi (lower arm)   = _cal_init_psi   (default 45°)
+      
+      Algorithm:
+        1. Set step counters to correspond to the calibration pose angles
+        2. Enable calibration mode flag
+        3. Run standard homing - arms rotate to limit switches, then pulloff
+        4. In set_homed_mpos (calibration mode), capture the current motor 
+           angles from step counters BEFORE they get overwritten
+        5. These captured angles become the new mpos_mm values
+        6. Update homing config and re-sync position
+        
+      After calibration, user should save with $Config/Save (NVS).
+      Subsequent power-ups only need G28 ($H) to home.
+    */
+    Error Scara::auto_calibrate(Channel& out) {
+        if (!state_is(State::Idle)) {
+            log_error("Cannot calibrate: machine not idle");
+            return Error::IdleError;
+        }
+
+        auto axes   = config->_axes;
+        auto n_axis = axes->_numberAxis;
+
+        log_info("SCARA auto-calibration starting...");
+        log_info("  Initial pose: theta=" << _cal_init_theta << " psi=" << _cal_init_psi);
+
+        // Step 1: Set motor position to the known calibration pose angles.
+        // This establishes the step counter baseline so that when homing moves
+        // the motors, the step counters track the actual physical angles.
+        set_motor_pos(X_AXIS, _cal_init_theta);
+        set_motor_pos(Y_AXIS, _cal_init_psi);
+
+        // Update cartesian position via forward kinematics for system consistency
+        float motor_pos[MAX_N_AXIS];
+        motor_pos[X_AXIS] = _cal_init_theta;
+        motor_pos[Y_AXIS] = _cal_init_psi;
+        for (axis_t axis = Z_AXIS; axis < n_axis; axis++) {
+            motor_pos[axis] = steps_to_motor_pos(get_axis_steps(axis), axis);
+        }
+        float cartesian[MAX_N_AXIS];
+        motors_to_cartesian(cartesian, motor_pos, n_axis);
+        gc_sync_position();
+
+        log_info("  Motor position set to calibration pose");
+
+        // Step 2: Enable calibration mode. In this mode, set_homed_mpos() will
+        // capture the current motor angles (from step counters) instead of
+        // overwriting them with the old mpos_mm values.
+        _calibrating = true;
+        _cal_result_theta = 0;
+        _cal_result_psi = 0;
+
+        log_info("  Running homing sequence...");
+
+        // Step 3: Run homing for X and Y axes (cycle 1).
+        // Homing moves motors to limit switches, does pulloff, then calls
+        // set_homed_mpos(). In calibration mode, set_homed_mpos captures
+        // the angle at the post-pulloff position.
+        AxisMask xy_mask = bitnum_to_mask(X_AXIS) | bitnum_to_mask(Y_AXIS);
+        Machine::Homing::run_cycles(xy_mask);
+
+        // Wait for homing to complete
+        do {
+            protocol_execute_realtime();
+        } while (state_is(State::Homing));
+
+        _calibrating = false;
+
+        if (state_is(State::Alarm)) {
+            log_error("Calibration failed: homing resulted in alarm");
+            return Error::InvalidStatement;
+        }
+
+        log_info("  Homing complete");
+        log_info("  Calibrated angles: theta=" << _cal_result_theta << " psi=" << _cal_result_psi);
+
+        // Step 4: Update the homing mpos_mm config with the calibrated values.
+        // These values represent the motor angles at the post-pulloff position
+        // after homing. On future G28 commands, set_homed_mpos will use these
+        // values to correctly set the motor position.
+        auto x_homing = axes->_axis[X_AXIS]->_homing;
+        auto y_homing = axes->_axis[Y_AXIS]->_homing;
+
+        if (x_homing) {
+            x_homing->_mpos = _cal_result_theta;
+            log_info("  X axis homing mpos_mm = " << _cal_result_theta);
+        }
+        if (y_homing) {
+            y_homing->_mpos = _cal_result_psi;
+            log_info("  Y axis homing mpos_mm = " << _cal_result_psi);
+        }
+
+        // Step 5: Re-run set_homed_mpos in normal mode with the correct values
+        // to ensure the step counters and cartesian position are fully consistent.
+        float mpos[MAX_N_AXIS];
+        float* current_mpos = get_mpos();
+        for (axis_t axis = X_AXIS; axis < n_axis; axis++) {
+            mpos[axis] = current_mpos[axis];
+        }
+        mpos[X_AXIS] = _cal_result_theta;
+        mpos[Y_AXIS] = _cal_result_psi;
+        set_homed_mpos(mpos);
+
+        gc_sync_position();
+
+        // Step 6: Save the calibration init pose (e.g. theta=0, psi=45) as G28 position.
+        // After homing ($H), the user can send G28 to move back to this known pose.
+        // Calculate the cartesian coordinates of the init pose via forward kinematics.
+        {
+            float init_motor[MAX_N_AXIS] = {};
+            init_motor[X_AXIS] = _cal_init_theta;
+            init_motor[Y_AXIS] = _cal_init_psi;
+            for (axis_t axis = Z_AXIS; axis < n_axis; axis++) {
+                init_motor[axis] = 0;
+            }
+            float init_cartesian[MAX_N_AXIS] = {};
+            motors_to_cartesian(init_cartesian, init_motor, n_axis);
+
+            coords[CoordIndex::G28]->set(init_cartesian);
+            gc_ngc_changed(CoordIndex::G28);
+
+            log_info("  G28 position saved: X=" << init_cartesian[X_AXIS] 
+                     << " Y=" << init_cartesian[Y_AXIS]);
+        }
+
+        log_info("SCARA calibration complete!");
+        log_msg_to(out, "Calibration complete. Limit angles: theta=" 
+                   << _cal_result_theta << " psi=" << _cal_result_psi);
+        log_msg_to(out, "Run $CD=/localfs/config.yaml to save config.");
+
+        return Error::Ok;
     }
 
     // Configuration registration

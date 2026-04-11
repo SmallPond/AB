@@ -64,6 +64,16 @@ namespace Kinematics {
         virtual void group(Configuration::HandlerBase& handler) override;
         void afterParse() override {}
 
+        // Calibration support
+        // Called by $M700 command to perform auto-calibration
+        // The arm must be pre-positioned at the calibration pose:
+        //   theta = _cal_init_theta (default 0°), psi = _cal_init_psi (default 45°)
+        // Steps: 1) Record current step counts
+        //        2) Run homing to hit limit switches
+        //        3) Calculate limit switch angles from initial pose + moved steps
+        //        4) Update homing mpos_mm with calculated angles
+        Error auto_calibrate(Channel& out) override;
+
         ~Scara() {}
 
     private:
@@ -74,10 +84,6 @@ namespace Kinematics {
         // Inverse kinematics: Convert cartesian coordinates to motor angles
         // Returns true if the position is reachable, false otherwise
         bool inverse_kinematics(float cartesian_x, float cartesian_y, float& theta_deg, float& psi_deg);
-
-        // Homing helper: compute motor-space target and feedrate for a given homing phase
-        void motorVector(AxisMask axisMask, MotorMask motors, Machine::Homing::Phase phase,
-                         float* target, float& rate, uint32_t& settle_ms);
 
         // Helper functions for angle conversions
         inline float degrees_to_radians(float degrees) { return degrees * (M_PI / 180.0f); }
@@ -93,6 +99,16 @@ namespace Kinematics {
         
         // Segment length for breaking up non-linear moves
         float _kinematic_segment_len_mm = 1.0f;
+
+        // Calibration initial pose (degrees)
+        // Default: upper arm along -X axis (0°), elbow at 45°
+        float _cal_init_theta = 0.0f;
+        float _cal_init_psi   = 45.0f;
+
+        // Calibration runtime state
+        bool  _calibrating      = false;
+        float _cal_result_theta = 0.0f;
+        float _cal_result_psi   = 0.0f;
 
         // Motor position storage for feedrate calculation
         float _last_motor_pos[MAX_N_AXIS] = { 0 };

@@ -7,7 +7,10 @@
 #include "System.h"  // AxisMask, MotorMask
 #include "Planner.h"
 #include "Types.h"
+#include "Error.h"
 #include "Machine/Homing.h"
+
+class Channel;  // Forward declaration
 
 /*
 Special types
@@ -62,6 +65,7 @@ namespace Kinematics {
 
         void homing_move(AxisMask axes, MotorMask motors, Machine::Homing::Phase phase, uint32_t settling_ms);
         void set_homed_mpos(float* mpos);
+        Error auto_calibrate(Channel& out);
 
     private:
         ::Kinematics::KinematicSystem* _system = nullptr;
@@ -110,6 +114,10 @@ namespace Kinematics {
 
         virtual void homing_move(AxisMask axes, MotorMask motors, Machine::Homing::Phase phase, uint32_t settling_ms) {}
         virtual void set_homed_mpos(float* mpos) {}
+
+        // Auto-calibration support (optional, only for SCARA-like kinematics)
+        // Returns Error::Ok on success. Default: not supported.
+        virtual Error auto_calibrate(Channel& out) { return Error::InvalidStatement; }
 
         // Configuration interface.
         void afterParse() override {}

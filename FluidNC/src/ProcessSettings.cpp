@@ -998,6 +998,12 @@ static Error list_parameters(const char* value, AuthenticationLevel auth_level, 
     return Error::Ok;
 }
 
+// SCARA auto-calibration command ($M700)
+// Requires the arm to be manually positioned at the calibration pose first.
+static Error scara_calibrate(const char* value, AuthenticationLevel auth_level, Channel& out) {
+    return config->_kinematics->auto_calibrate(out);
+}
+
 // Commands use the same syntax as Settings, but instead of setting or
 // displaying a persistent value, a command causes some action to occur.
 // That action could be anything, from displaying a run-time parameter
@@ -1078,6 +1084,8 @@ void make_user_commands() {
 
     new AsyncUserCommand("J", "Jog", doJog, notIdleOrJog);
     new AsyncUserCommand("G", "GCode/Modes", report_gcode, anyState);
+
+    new UserCommand("M700", "Scara/Calibrate", scara_calibrate, notIdleOrAlarm);
 };
 
 // This is the handler for all forms of settings commands,
