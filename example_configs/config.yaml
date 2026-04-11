@@ -3,9 +3,9 @@
 # X/Y: SCARA arms (16 microsteps)
 # Z: Servo for pen lift/lower
 
-name: SCARA Pen Plotter
+name: ARTS
 board: ESP32-S3-DevKitC-1
-meta: 2026-03-31 Minimal Test
+meta: 2026-04-11 Run
 
 stepping:
   engine: RMT
@@ -18,7 +18,8 @@ kinematics:
   Scara:
     linkage1_mm: 200.0
     linkage2_mm: 200.0
-    scara_offset_x: 129.0
+    # M367 X-129.00 Y128.00: coordinate offset
+    scara_offset_x: -129.0
     scara_offset_y: 128.0
     kinematic_segment_len_mm: 0.5
 
@@ -27,22 +28,22 @@ axes:
   homing_runs: 1
   
   x:
-    # Steps per degree calculation:
-    # 200 steps/rev * 16 microsteps = 3200 steps/rev
-    # 3200 / 360 degrees = 8.89 steps/degree
-    steps_per_mm: 8.89
-    max_rate_mm_per_min: 5400
-    acceleration_mm_per_sec2: 300
+    # M92 X48.80: steps per mm
+    steps_per_mm: 48.80
+    # M203 X1000.00: max rate 1000 mm/s = 60000 mm/min
+    max_rate_mm_per_min: 60000
+    # M201 X1000: acceleration 1000 mm/s²
+    acceleration_mm_per_sec2: 1000
     max_travel_mm: 360
     soft_limits: false
 
     homing:
       cycle: 1
-      mpos_mm: 0
-      positive_direction: true
+      mpos_mm: -21.926
+      positive_direction: false
       seek_mm_per_min: 2700
       feed_mm_per_min: 540
-
+      
     motor0:
       limit_all_pin: gpio.18:high:pu
       hard_limits: true
@@ -54,18 +55,18 @@ axes:
         disable_pin: gpio.40
 
   y:
-    # Steps per degree calculation (same as X axis):
-    # 200 steps/rev * 16 microsteps = 3200 steps/rev
-    # 3200 / 360 degrees = 8.89 steps/degree
-    steps_per_mm: 8.89
-    max_rate_mm_per_min: 5400
-    acceleration_mm_per_sec2: 300
+    # M92 Y48.80: steps per mm
+    steps_per_mm: 48.80
+    # M203 Y1000.00: max rate 1000 mm/s = 60000 mm/min
+    max_rate_mm_per_min: 60000
+    # M201 Y1000: acceleration 1000 mm/s²
+    acceleration_mm_per_sec2: 1000
     max_travel_mm: 360
     soft_limits: false
 
     homing:
       cycle: 1
-      mpos_mm: 0
+      mpos_mm: 46.6
       positive_direction: true
       seek_mm_per_min: 2700
       feed_mm_per_min: 540
@@ -88,11 +89,6 @@ axes:
     acceleration_mm_per_sec2: 1000
     max_travel_mm: 90
     soft_limits: false
-
-    homing:
-      cycle: 2
-      mpos_mm: 90
-      positive_direction: true
 
     motor0:
       rc_servo:
@@ -124,13 +120,14 @@ parking:
 macros:
   startup_line0: G21
   startup_line1: G90
-  Macro0: G0 Z10   # Pen down (M4 L10.00)
-  Macro1: G0 Z90   # Pen up (M4 T90.00)
+  Macro0: G0 Z10
+  Macro1: G0 Z90
   Macro2: G28
-  after_homing: G0 Z90  # Pen up after homing
+  after_homing: G28
 
 arc_tolerance_mm: 0.002
-junction_deviation_mm: 0.01
+# M205 X1.20: junction deviation (jerk)
+junction_deviation_mm: 1.20
 verbose_errors: true
 report_inches: false
 planner_blocks: 16
